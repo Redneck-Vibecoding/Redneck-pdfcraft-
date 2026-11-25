@@ -105,6 +105,8 @@ jobs:
                       continue
                   if p.endswith((".md", ".txt")) or p.startswith("LICENSE") or p == "NOTICE":
                       continue
+                  if p.startswith("pdfcraft-ocr-worker"):
+                      continue  # el worker OCR se cachea la primera vez que se usa OCR
                   core.append(p)
           core.sort()
           h = hashlib.sha256()
@@ -114,13 +116,46 @@ jobs:
                   h.update(f.read())
           version = h.hexdigest()[:12]
           precache = ["./"] + [p for p in core if p != "index.html"] + ["index.html"]
+          total_bytes = sum(os.path.getsize(os.path.join(site, p)) for p in core)
 
           sw = """// Service worker generado en cada build. Version: %(v)s
           const CACHE = 'pdfcraft-%(v)s';
           const PRECACHE = %(list)s;
 
+          const TOTAL = %(total)d;
+
+          async function notify(loaded, done) {
+            const cl = await self.clients.matchAll({ includeUncontrolled: true });
+            cl.forEach((c) => c.postMessage({ type: 'pwa-progress', loaded, total: TOTAL, done: !!done }));
+          }
+
+          async function precache() {
+            const cache = await caches.open(CACHE);
+            let loaded = 0, last = 0;
+            const queue = PRECACHE.slice();
+            async function worker() {
+              while (queue.length) {
+                const url = queue.shift();
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('precache ' + url + ' ' + res.status);
+                const reader = res.clone().body.getReader();
+                const put = cache.put(url, res);
+                for (;;) {
+                  const r = await reader.read();
+                  if (r.done) break;
+                  loaded += r.value.length;
+                  const now = Date.now();
+                  if (now - last > 250) { last = now; notify(loaded, false); }
+                }
+                await put;
+              }
+            }
+            await Promise.all([worker(), worker(), worker()]);
+            await notify(TOTAL, true);
+          }
+
           self.addEventListener('install', (event) => {
-            event.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting()));
+            event.waitUntil(precache().then(() => self.skipWaiting()));
           });
 
           self.addEventListener('activate', (event) => {
@@ -155,7 +190,7 @@ jobs:
               }))
             );
           });
-          """ % {"v": version, "list": json.dumps(precache, indent=2)}
+          """ % {"v": version, "list": json.dumps(precache, indent=2), "total": total_bytes}
           with open(os.path.join(site, "sw.js"), "w") as f:
               f.write(sw)
 
@@ -168,9 +203,43 @@ jobs:
               <meta name="apple-mobile-web-app-title" content="PdfCraft" />
               <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
               <link rel="icon" type="image/png" href="./icons/icon-192.png" />
+              <style>
+                #pwa-progress{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:2147483647;max-width:92vw;
+                  background:#1f2430;color:#fff;font:14px/1.35 system-ui,sans-serif;padding:10px 14px;border-radius:10px;
+                  box-shadow:0 4px 18px rgba(0,0,0,.3);display:none}
+                #pwa-progress .bar{height:4px;background:#ffffff33;border-radius:2px;margin-top:6px;overflow:hidden}
+                #pwa-progress .bar i{display:block;height:100%;width:0;background:#6ea0ff}
+              </style>
               <script>
                 if ('serviceWorker' in navigator) {
-                  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('sw', e)));
+                  const mk = () => {
+                    let el = document.getElementById('pwa-progress');
+                    if (!el) {
+                      el = document.createElement('div'); el.id = 'pwa-progress';
+                      el.innerHTML = '<div class="t"></div><div class="bar"><i></i></div>';
+                      document.body.appendChild(el);
+                    }
+                    return el;
+                  };
+                  let hideT;
+                  navigator.serviceWorker.addEventListener('message', (e) => {
+                    const d = e.data; if (!d || d.type !== 'pwa-progress') return;
+                    if (!document.body) return;
+                    const el = mk();
+                    clearTimeout(hideT);
+                    if (d.done) {
+                      el.querySelector('.t').textContent = 'Listo. PdfCraft ya funciona sin conexi\u00f3n.';
+                      el.querySelector('i').style.width = '100%';
+                      hideT = setTimeout(() => { el.style.display = 'none'; }, 3000);
+                    } else {
+                      const mb = (n) => (n / 1048576).toFixed(0);
+                      el.querySelector('.t').textContent = 'Descargando PdfCraft para usarlo sin conexi\u00f3n: ' + mb(d.loaded) + ' de ' + mb(d.total) + ' MB (solo la primera vez)';
+                      el.querySelector('i').style.width = Math.min(100, d.loaded * 100 / d.total) + '%';
+                      hideT = setTimeout(() => { el.style.display = 'none'; }, 20000);
+                    }
+                    el.style.display = 'block';
+                  });
+                  navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('sw', e));
                 }
               </script>
           """
