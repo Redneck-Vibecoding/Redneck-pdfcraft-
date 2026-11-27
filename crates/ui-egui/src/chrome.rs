@@ -90,6 +90,13 @@ fn window_body(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
 /// Preferences buttons. The window's caption buttons are the bar's own.
 fn title_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
+    let width = ctx.content_rect().width();
+    let touch_mode = app.responsive.touch_mode();
+    let compact_toggles = !app.hidden_interface().window_ui && width.is_finite() && (width < 480.0 || (touch_mode && width < 960.0));
+    let show_tools_toggle = compact_toggles && app.mode != crate::Mode::Read && !(app.mode == crate::Mode::AllTools && app.all_tools_full);
+    let show_toolbar_toggle = compact_toggles && app.active.is_some() && !app.hotbar_hidden();
+    let show_side_toggle = compact_toggles && app.active.is_some() && width < 440.0;
+    let show_desktop_extras = width.is_finite() && width >= 680.0 && !(touch_mode && width < 820.0);
     let (theme_icon, theme_label) = match app.theme_preference {
         ModeChoice::System => ("monitor", tl!("Use system setting")),
         ModeChoice::Light => ("sun", tl!("Light gray")),
@@ -99,8 +106,23 @@ fn title_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let theme_label = format!("{}: {theme_label}", tl!("Display theme"));
     let out = TitleBar::new()
         .trailing(|ui, _| {
-            Button::command("help.discord").label("Discord").icon(IconId::new("messages-square")).tooltip(tl!("Join the ArtCraft Discord")).show(ui);
-            IconButton::command(IconId::new("circle-help"), "help.shortcuts").show(ui);
+            if show_tools_toggle {
+                IconButton::command(IconId::new("panel-left"), "view.tools_pane").show(ui);
+            }
+            if show_toolbar_toggle {
+                IconButton::command(IconId::new("wrench"), "view.quick_toolbar").show(ui);
+            }
+            if show_side_toggle {
+                IconButton::command(IconId::new("panel-right"), "view.side_panel").show(ui);
+            }
+            if show_desktop_extras {
+                Button::command("help.discord")
+                    .label("Discord")
+                    .icon(IconId::new("messages-square"))
+                    .tooltip(tl!("Join the ArtCraft Discord"))
+                    .show(ui);
+                IconButton::command(IconId::new("circle-help"), "help.shortcuts").show(ui);
+            }
             let theme_button = IconButton::command(IconId::new(theme_icon), ThemeChoice::NextMode.command()).label(theme_label.clone()).show(ui);
             let opener = theme_button.response().clone();
             Menu::context(tl!("Appearance"), &opener).show(ui, |ui, _| {

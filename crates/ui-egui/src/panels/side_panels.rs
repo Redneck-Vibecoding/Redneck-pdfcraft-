@@ -226,20 +226,84 @@ fn move_toolbar(app: &mut PdfCraftApp, rect: egui::Rect) {
     drop(Arc::make_mut(&mut app.dock).apply(Action::move_floating(PanelId::Toolbar, rect), false, permissions));
 }
 
+/// Clamps `Tools` width on compact screens and fits `Tools` / floating `Toolbar` across breakpoints.
+fn fit_responsive_panels(app: &mut PdfCraftApp, viewport: egui::Vec2) {
+    let width = if viewport.x.is_finite() && viewport.x > 0.0 { viewport.x } else { return };
+    app.responsive.last_viewport_width = width;
+    let compact = app.responsive.compact_panels(width);
+    if app.responsive.compact_applied != Some(compact) {
+        app.responsive.compact_applied = Some(compact);
+        if compact && app.dock.layout().contains(&PanelId::Tools) {
+            if set_shown(Arc::make_mut(&mut app.dock), PanelId::Tools, false).is_ok() {
+                app.responsive.tools_auto_collapsed = true;
+            }
+        } else if !compact && app.responsive.tools_auto_collapsed {
+            app.responsive.tools_auto_collapsed = false;
+            drop(set_shown(Arc::make_mut(&mut app.dock), PanelId::Tools, true));
+        }
+    }
+    let phone_tb = app.responsive.phone_toolbar(width);
+    if app.responsive.phone_toolbar_applied != Some(phone_tb) {
+        app.responsive.phone_toolbar_applied = Some(phone_tb);
+        if phone_tb && app.dock.layout().contains(&PanelId::Toolbar) {
+            if set_shown(Arc::make_mut(&mut app.dock), PanelId::Toolbar, false).is_ok() {
+                app.responsive.toolbar_auto_hidden = true;
+            }
+        } else if !phone_tb && app.responsive.toolbar_auto_hidden {
+            app.responsive.toolbar_auto_hidden = false;
+            drop(set_shown(Arc::make_mut(&mut app.dock), PanelId::Toolbar, true));
+        }
+    }
+    clamp_floating_toolbar(app, viewport);
+}
+
+/// Keeps the floating quick toolbar inside `viewport` when the screen shrinks.
+fn clamp_floating_toolbar(app: &mut PdfCraftApp, viewport: egui::Vec2) {
+    if !(viewport.x.is_finite() && viewport.y.is_finite() && viewport.x > 80.0 && viewport.y > 120.0) {
+        return;
+    }
+    let Some(rect) = toolbar_rect(&app.dock) else { return };
+    let max_x = (viewport.x - rect.width() - 4.0).max(4.0);
+    let max_y = (viewport.y - rect.height().min(viewport.y - 4.0) - 4.0).max(4.0);
+    let clamped_x = rect.min.x.clamp(4.0, max_x);
+    let clamped_y = rect.min.y.clamp(4.0, max_y);
+    if (clamped_x - rect.min.x).abs() > 1.0 || (clamped_y - rect.min.y).abs() > 1.0 {
+        let clamped = egui::Rect::from_min_size(egui::pos2(clamped_x, clamped_y), rect.size());
+        move_toolbar(app, clamped);
+    }
+}
+
 /// The Tools pane's width follows the window across [`NARROW_WINDOW`]: production's narrower pane in a small window, the
-/// wider default in a large one. Only the crossing changes it, so a width the user dragged to is kept.
+/// wider default in a large one, and capped on compact mobile viewports so the document stays usable.
 fn fit_tools_to_window(app: &mut PdfCraftApp, window_width: f32) {
-    let narrow = window_width.is_finite() && window_width < NARROW_WINDOW;
-    if narrow == app.window_narrow {
+    if !window_width.is_finite() || window_width <= 0.0 {
+        return;
+    }
+    let compact = app.responsive.compact_panels(window_width);
+    let narrow = window_width < NARROW_WINDOW;
+    if !app.dock.layout().contains(&PanelId::Tools) {
+        app.window_narrow = narrow;
+        app.responsive.tools_compact_width = None;
+        return;
+    }
+    let target = if compact {
+        Some((window_width * 0.62).round().clamp(190.0, TOOLS_WIDTH))
+    } else {
+        app.responsive.tools_compact_width = None;
+        None
+    };
+    let need_compact = target.is_some_and(|w| app.responsive.tools_compact_width != Some(w));
+    if narrow == app.window_narrow && !need_compact {
         return;
     }
     app.window_narrow = narrow;
-    if !app.dock.layout().contains(&PanelId::Tools) {
-        return;
-    }
-    let width = if narrow { TOOLS_WIDTH_NARROW } else { TOOLS_WIDTH };
+    let width = target.unwrap_or(if narrow { TOOLS_WIDTH_NARROW } else { TOOLS_WIDTH });
     // A refused resize (a locked layout) leaves the width as it is.
     if Arc::make_mut(&mut app.dock).apply(Action::resize_column(PanelId::Tools, width), false, permissions).is_err() {
+        return;
+    }
+    if let Some(w) = target {
+        app.responsive.tools_compact_width = Some(w);
         return;
     }
     // The floating toolbar sits in the page area's margin, which moved with the pane's edge.
@@ -586,8 +650,10 @@ pub fn dock(app: &mut PdfCraftApp, ui: &mut Ui) {
     let organizing = app.active_ids().and_then(|(index, _)| app.views.get(index)).is_some_and(|view| view.organize);
     let toolbar = active && !app.hotbar_hidden() && !organizing && !expanded;
     let anchor = rail_anchor(app);
+    let viewport = ui.ctx().content_rect().size();
+    fit_responsive_panels(app, viewport);
     keep_toolbar_in_the_margin(app);
-    fit_tools_to_window(app, ui.ctx().content_rect().width());
+    fit_tools_to_window(app, viewport.x);
     refresh_specs(app);
     let workspace = Arc::clone(&app.dock);
     // The rail lists the Accessibility Checker once the document has a report, and Search and Compare only while
@@ -648,6 +714,10 @@ pub fn dock(app: &mut PdfCraftApp, ui: &mut Ui) {
     let after = right_of(&app.dock);
     if after != before {
         app.right_panel_chosen(before, after);
+        if after.is_some() && app.responsive.single_side_panel(viewport.x) && app.dock.layout().contains(&PanelId::Tools) {
+            app.responsive.tools_auto_collapsed = false;
+            drop(set_shown(Arc::make_mut(&mut app.dock), PanelId::Tools, false));
+        }
     }
     if let Some(panel) = open_side(&app.dock).and_then(PanelId::side) {
         app.last_right = panel;
@@ -672,7 +742,19 @@ fn refused() -> String {
 }
 
 /// Opens or closes `panel` in the workspace, the one write path for panel visibility.
+/// On compact/touch viewports, `Tools` and any `RightPanel` are mutually exclusive so the page stays readable.
 fn show_panel(app: &mut PdfCraftApp, panel: PanelId, visible: bool) -> Result<(), String> {
+    if visible && app.responsive.single_side_panel(app.responsive.last_viewport_width) {
+        if panel == PanelId::Tools {
+            app.responsive.tools_auto_collapsed = false;
+            if let Some(side) = open_side(&app.dock) {
+                drop(set_shown(Arc::make_mut(&mut app.dock), side, false));
+            }
+        } else if panel.side().is_some() && app.dock.layout().contains(&PanelId::Tools) {
+            app.responsive.tools_auto_collapsed = false;
+            drop(set_shown(Arc::make_mut(&mut app.dock), PanelId::Tools, false));
+        }
+    }
     set_shown(Arc::make_mut(&mut app.dock), panel, visible).map_err(|_| refused())
 }
 
@@ -1231,5 +1313,33 @@ mod tests {
         let snapshot = moved.state().settings_snapshot();
         let restored = harness(move |app| app.apply_settings(&snapshot));
         assert!(tools_x(&restored) > 700.0);
+    }
+
+    #[test]
+    fn phone_viewport_auto_collapses_panels_and_keeps_tools_and_side_mutually_exclusive() {
+        let mut phone = Harness::builder().with_size(egui::vec2(390.0, 844.0)).build_eframe(|cc| {
+            crate::PdfCraftApp::install_runtime(&cc.egui_ctx);
+            let mut app = PdfCraftApp::for_unit_tests();
+            app.set_option(&egui::Context::default(), "language", "en").unwrap();
+            app
+        });
+        phone.run_steps(6);
+
+        assert!(!phone.state().left_open(), "Tools pane auto-collapses on narrow phone viewports");
+        assert!(!phone.state().dock.layout().contains(&PanelId::Toolbar), "floating Toolbar auto-hides on narrow phone viewports");
+
+        // Opening a side panel then opening Tools must close the side panel on compact screens.
+        command(phone.state_mut(), false, &json!({"panel": "bookmarks", "open": true})).unwrap();
+        assert_eq!(phone.state().right(), Some(RightPanel::Bookmarks));
+        assert!(!phone.state().left_open());
+
+        command(phone.state_mut(), false, &json!({"panel": "tools", "open": true})).unwrap();
+        assert!(phone.state().left_open());
+        assert_eq!(phone.state().right(), None, "opening Tools closes open side panel on narrow screens");
+
+        // Opening another side panel closes Tools in turn.
+        command(phone.state_mut(), false, &json!({"panel": "comments", "open": true})).unwrap();
+        assert_eq!(phone.state().right(), Some(RightPanel::Comments));
+        assert!(!phone.state().left_open(), "opening a side panel closes Tools on narrow screens");
     }
 }

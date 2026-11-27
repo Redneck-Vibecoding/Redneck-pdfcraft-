@@ -95,6 +95,8 @@ pub(crate) struct PageToolCx<'a> {
     pub(crate) units: crate::units::Unit,
     /// The user's navigation choices, which the Hand and Zoom tools read.
     pub(crate) navigation: NavigationOptions,
+    /// Active touch mode: single-finger drags under Select pan with inertia and double-taps zoom.
+    pub(crate) touch_input: bool,
     /// The app's Host, which the tools that run background jobs build their queues from (L-135).
     pub(crate) host: &'a Host,
     /// The app's one wake source (L-168), for those queues.
@@ -170,6 +172,17 @@ pub(crate) struct PageTool<'a> {
     content_delete: bool,
     button_held: bool,
     delete_content: bool,
+    touch: Option<TouchGesture<'a>>,
+}
+
+/// Adapts touch gestures over [`PageTool`]: 1-finger drag pans via `HandTool` under `Select`,
+/// and double-tap without drag toggles zoom under `Select` and `Hand`.
+struct TouchGesture<'a> {
+    hand: Option<&'a mut HandTool>,
+    press: &'a mut Option<ToolPointer>,
+    panning: &'a mut bool,
+    double_dragged: &'a mut bool,
+    double_tap: Option<Pos2>,
 }
 
 /// What the page tool finished in a pass. The fields the page body reads are public; the rest are applied to the
@@ -200,6 +213,8 @@ pub(crate) struct ToolFinish {
     text_finished: bool,
     /// Delete was pressed with added content selected under Select.
     delete_content: bool,
+    /// Touch double-tap position when a double-tap without drag completed on the canvas.
+    pub(crate) double_tap: Option<Pos2>,
 }
 
 /// Whether copied comments hang on the pointer: they take the next click whatever tool is on.
@@ -296,6 +311,8 @@ pub(crate) fn page_tool<'a>(
     let map: &'a comments::PageMap<'a> = map_slot.insert(comments::PageMap::new(cx.info, cx.pages, cx.rotation, cx.view));
     let selects_text = tool_selects_text(tool, cx.preparing);
     let content_delete = tool == QuickTool::Select && session.content.selected.is_some() && session.content.draft.is_none();
+    let touch_select = cx.touch_input && tool == QuickTool::Select && !cx.preparing && !placing(session);
+    let touch_hand = cx.touch_input && matches!(tool, QuickTool::Hand) && !cx.presenting;
     let arm = match tool {
         // Prepare a form under the Select tool: the selection rectangle and the moves of fields are Prepare's.
         QuickTool::Select if cx.preparing => {
@@ -418,6 +435,26 @@ pub(crate) fn page_tool<'a>(
         QuickTool::SignArea { certify } => Arm::SignArea(SignAreaTool::new(certify, &mut session.box_drag, cx.pages, cx.rotation, cx.info)),
         QuickTool::Snapshot => Arm::Snapshot(SnapshotTool::new(&mut session.box_drag, cx.pages, cx.rotation, size)),
     };
+    let touch = if touch_select {
+        session.hand.options = cx.navigation;
+        Some(TouchGesture {
+            hand: Some(&mut session.hand),
+            press: &mut session.touch_pan_press,
+            panning: &mut session.touch_panning,
+            double_dragged: &mut session.touch_double_dragged,
+            double_tap: None,
+        })
+    } else if touch_hand {
+        Some(TouchGesture {
+            hand: None,
+            press: &mut session.touch_pan_press,
+            panning: &mut session.touch_panning,
+            double_dragged: &mut session.touch_double_dragged,
+            double_tap: None,
+        })
+    } else {
+        None
+    };
     PageTool {
         arm,
         tool,
@@ -428,6 +465,7 @@ pub(crate) fn page_tool<'a>(
         content_delete,
         button_held: cx.button_held,
         delete_content: false,
+        touch,
     }
 }
 
@@ -478,6 +516,7 @@ impl<'a> PageTool<'a> {
             text_tool: self.selects_text.then_some(self.tool),
             text_finished: self.released && self.selects_text,
             delete_content: self.delete_content,
+            double_tap: self.touch.and_then(|t| t.double_tap),
             ..ToolFinish::default()
         };
         match self.arm {
@@ -621,19 +660,73 @@ pub(crate) fn edit_text_press(
 impl CanvasTool for PageTool<'_> {
     fn each_pass(&mut self, cx: &mut ToolContext<'_>) {
         self.released = false;
+        if let Some(hand) = self.touch.as_mut().and_then(|t| t.hand.as_deref_mut()) {
+            hand.each_pass(cx);
+        }
         self.tool_mut().each_pass(cx);
     }
 
     fn press(&mut self, pointer: &ToolPointer, cx: &mut ToolContext<'_>) -> ToolAction {
+        if let Some(touch) = &mut self.touch {
+            *touch.panning = false;
+            *touch.double_dragged = false;
+            if let Some(hand) = touch.hand.as_deref_mut() {
+                hand.stop_glide();
+                let arm_pan = pointer.clicks == 1 && !pointer.mods.shift && !pointer.mods.alt;
+                *touch.press = arm_pan.then_some(*pointer);
+                let action = self.tool_mut().press(pointer, cx);
+                return if arm_pan && action == ToolAction::Ignored { ToolAction::Claimed } else { action };
+            }
+            *touch.press = None;
+        }
         self.tool_mut().press(pointer, cx)
     }
 
     fn drag(&mut self, pointer: &ToolPointer, cx: &mut ToolContext<'_>) {
+        if let Some(touch) = &mut self.touch {
+            if let Some(hand) = touch.hand.as_deref_mut() {
+                if *touch.panning {
+                    hand.drag(pointer, cx);
+                    return;
+                }
+                if let Some(start) = touch.press.take() {
+                    *touch.panning = true;
+                    // Borrowed mutably in two steps so `self.tool_mut()` cancels before `hand` moves the view.
+                    self.tool_mut().cancel(CancelReason::Escape, cx);
+                    if let Some(hand) = self.touch.as_mut().and_then(|t| t.hand.as_deref_mut()) {
+                        hand.press(&start, cx);
+                        hand.drag(pointer, cx);
+                    }
+                    drop(start);
+                    return;
+                }
+                *touch.double_dragged = true;
+            } else {
+                *touch.panning = true;
+                *touch.double_dragged = true;
+            }
+        }
         self.tool_mut().drag(pointer, cx);
     }
 
     /// Forwards, and notes the release: a text selection ends in this pass ([`ToolFinish::apply`]).
     fn release(&mut self, pointer: &ToolPointer, cx: &mut ToolContext<'_>) {
+        if let Some(touch) = &mut self.touch {
+            *touch.press = None;
+            let was_panning = *touch.panning;
+            *touch.panning = false;
+            if let Some(hand) = touch.hand.as_deref_mut()
+                && was_panning
+            {
+                hand.release(pointer, cx);
+                return;
+            }
+            if !self.presenting && pointer.clicks == 2 && !was_panning && !*touch.double_dragged {
+                touch.double_tap = Some(pointer.pos);
+                self.tool_mut().cancel(CancelReason::Escape, cx);
+                return;
+            }
+        }
         self.released = true;
         self.tool_mut().release(pointer, cx);
     }
@@ -643,6 +736,14 @@ impl CanvasTool for PageTool<'_> {
     }
 
     fn cancel(&mut self, reason: CancelReason, cx: &mut ToolContext<'_>) {
+        if let Some(touch) = &mut self.touch {
+            *touch.press = None;
+            let was_panning = std::mem::replace(touch.panning, false);
+            *touch.double_dragged = false;
+            if was_panning && let Some(hand) = touch.hand.as_deref_mut() {
+                hand.cancel(reason, cx);
+            }
+        }
         self.tool_mut().cancel(reason, cx);
     }
 

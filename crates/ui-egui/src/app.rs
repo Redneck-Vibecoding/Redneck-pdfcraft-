@@ -6,7 +6,7 @@ use super::{APP_INFO, PendingDestination, PendingOpen, UPDATE_APP, open_worker, 
 use super::{
     CommentClip, DocId, DocView, PdfCraftApp, PrintDraft, PropsTab, RedactPrefs, RedactSearchDraft, Session, a11y_ui, actions_ui, canvas, chrome,
     combine_ui, comments, content_ui, dialogs, edit_text_ui, export_ui, fill_sign, i18n, measure_ui, object_ui, ocr_ui, ocr_verify, panes, persist,
-    prepare, print_paper, print_ui, rename_ui, scan_clean_ui, scroll_speed, side_panels, sign_ui, stamps_ui, ui_scale, workflows,
+    prepare, print_paper, print_ui, rename_ui, responsive, scan_clean_ui, scroll_speed, side_panels, sign_ui, stamps_ui, ui_scale, workflows,
 };
 
 use std::hash::Hash;
@@ -511,6 +511,7 @@ impl PdfCraftApp {
             pending_link: None,
             pending_window: None,
             pending_remote_link: None,
+            responsive: responsive::ResponsiveState::new(),
         }
     }
 
@@ -544,13 +545,7 @@ impl PdfCraftApp {
     /// The app's root values for this frame: appearance mode, motion, interface scale and the
     /// interface language's direction. The one place the app's `RootEnv` is built.
     pub(crate) fn root_env(&self, ctx: &egui::Context) -> RootEnv {
-        static SIZES: std::sync::OnceLock<Arc<craft::theme::AppSizes>> = std::sync::OnceLock::new();
-        let sizes = SIZES.get_or_init(|| {
-            let mut sizes = craft::theme::AppSizes::default();
-            sizes.all.insert("typography.display.size".into(), craft::theme::SizeValue::Number(24.0));
-            sizes.all.insert("typography.display.line_height".into(), craft::theme::SizeValue::Number(29.0));
-            Arc::new(sizes)
-        });
+        let sizes = self.responsive.app_sizes(ctx.content_rect().size());
         let lang = i18n::Lang::from_pref(&self.language);
         let direction = if lang.rtl() { craft_i18n::Direction::Rtl } else { craft_i18n::Direction::Ltr };
         let system = craft::ui::runtime::env::system_text_scale(ctx).unwrap_or(1.0);
@@ -563,7 +558,7 @@ impl PdfCraftApp {
         if let Ok(theme) = craft::theme::ThemeId::parse("craft.graphite") {
             root.set_theme(theme);
         }
-        root.sizes = Arc::clone(sizes);
+        root.sizes = sizes;
         // Every parameter dialog lays out as a document dialog: inline captions, shaded groups, buttons across the foot.
         root.values.set(craft::ui::patterns::form_dialogs::DialogLayout(craft::ui::patterns::form_dialogs::ParamLayout::Document));
         // PdfCraft's looks, opt-in over the framework's defaults: the filled dropdown triangle, shrinking document

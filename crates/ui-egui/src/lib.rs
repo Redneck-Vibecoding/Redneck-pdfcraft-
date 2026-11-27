@@ -136,6 +136,7 @@ pub use persist::units;
 use platform::macos_association;
 #[cfg(not(target_arch = "wasm32"))]
 use platform::open_worker;
+pub(crate) use platform::responsive;
 pub use platform::ui_scale;
 #[cfg(not(target_arch = "wasm32"))]
 use state::OpenRequest;
@@ -740,4 +741,6 @@ pub struct PdfCraftApp {
     pub pending_window: Option<viewer_prefs::PendingWindow>,
     /// An absolute GoToR target waiting for approval, before any target-file I/O (#1364).
     pub pending_remote_link: Option<PendingRemoteLink>,
+    /// Viewport breakpoints, touch mode state and responsive theme sizing.
+    pub(crate) responsive: responsive::ResponsiveState,
 }

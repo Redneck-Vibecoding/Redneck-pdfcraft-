@@ -175,3 +175,81 @@ impl DocView {
         (percent.is_finite() && percent > 0.0).then_some(percent / 100.0)
     }
 }
+
+/// Estimates the zoom factor corresponding to `Fit::Width` for a page whose upright size is `page_size`.
+fn fit_width_zoom(view: &DocView, viewport: egui::Rect, page_size: (f32, f32)) -> f64 {
+    let displayed_w = if view.view.rotation % 180 == 90 { page_size.1 } else { page_size.0 }.max(1.0);
+    let side = view.spacing.map_or(0.0, |s| s.side as f32);
+    let inner_w = (viewport.width() - 2.0 * side).max(48.0);
+    f64::from((inner_w / (displayed_w * PT)).clamp(0.1, 8.0))
+}
+
+/// Toggles between fit-to-width and a ~2× zoom anchored at the tapped screen position `at`.
+pub(crate) fn apply_double_tap_zoom(view: &mut DocView, viewport: egui::Rect, at: egui::Pos2) -> bool {
+    if !(viewport.is_finite() && viewport.width() > 1.0 && viewport.height() > 1.0 && at.is_finite()) {
+        return false;
+    }
+    let Some((page, page_pt)) = view.session.placed.iter().find(|p| p.rect.contains(at)).map(|placed| (placed.page, placed.to_page(at))) else {
+        return false;
+    };
+    let page_size = view.page_sizes.get(page).copied().unwrap_or((612.0, 792.0));
+    let fit_w = fit_width_zoom(view, viewport, page_size);
+    let vx = f64::from(((at.x - viewport.left()) / viewport.width()).clamp(0.0, 1.0));
+    let vy = f64::from(((at.y - viewport.top()) / viewport.height()).clamp(0.0, 1.0));
+    let zoomed_in = view.view.fit == Fit::None && view.view.zoom > fit_w * 1.15;
+    if zoomed_in {
+        view.view.fit = Fit::Width;
+        view.view.go_to_point(page, page_pt, (0.5, vy));
+    } else {
+        let target = (fit_w * 2.0).max(view.view.zoom * 1.75).clamp(1.25, 4.0);
+        view.view.fit = Fit::None;
+        view.view.zoom = target;
+        view.view.go_to_point(page, page_pt, (vx, vy));
+    }
+    view.end_find_following();
+    true
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+
+    const FIXTURE: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+
+    #[test]
+    fn double_tap_zoom_toggles_between_fit_width_and_zoomed_in() {
+        let mut h = Harness::builder().with_size(egui::vec2(400.0, 700.0)).build_eframe(|cc| {
+            crate::PdfCraftApp::install_runtime(&cc.egui_ctx);
+            let mut app = crate::PdfCraftApp::for_unit_tests();
+            app.open_bytes(&cc.egui_ctx, "tap.pdf", None, FIXTURE.to_vec()).unwrap();
+            app
+        });
+        h.run_steps(6);
+
+        let rect = h.state().views[0].session.placed[0].rect;
+        let vp = h.state().views[0].viewport;
+        let tap = rect.center();
+
+        // Off-page and degenerate viewports refuse safely without modifying the view.
+        assert!(!apply_double_tap_zoom(&mut h.state_mut().views[0], egui::Rect::NOTHING, tap));
+        assert!(!apply_double_tap_zoom(&mut h.state_mut().views[0], vp, egui::pos2(-50.0, -50.0)));
+
+        // First double-tap zooms in past Fit::Width and anchors on the tapped point.
+        assert!(apply_double_tap_zoom(&mut h.state_mut().views[0], vp, tap));
+        assert_eq!(h.state().views[0].view.fit, Fit::None);
+        assert!(h.state().views[0].view.zoom > 1.2);
+        assert!(matches!(h.state().views[0].view.go_to, Some(craft::pages::ui::view::GoTo::Point { .. })));
+
+        h.run_steps(4);
+        let tap_after = h.state().views[0].session.placed[0].rect.center();
+        // Second double-tap returns to Fit::Width.
+        assert!(apply_double_tap_zoom(&mut h.state_mut().views[0], vp, tap_after));
+        assert_eq!(h.state().views[0].view.fit, Fit::Width);
+    }
+}

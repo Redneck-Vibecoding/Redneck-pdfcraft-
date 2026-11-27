@@ -169,6 +169,11 @@ impl PdfCraftApp {
                     v.view.fit = fit;
                 }
             }
+            "view.quick_toolbar" => {
+                let open = self.dock.layout().contains(&crate::side_panels::PanelId::Toolbar);
+                self.responsive.toolbar_auto_hidden = false;
+                crate::side_panels::set_panel_visible(self, crate::side_panels::PanelId::Toolbar, !open);
+            }
             "view.rail.left" | "view.rail.right" => {
                 use craft::behavior::DockSide;
                 let side = if id == "view.rail.left" { DockSide::Start } else { DockSide::End };
@@ -477,7 +482,10 @@ impl PdfCraftApp {
                 }
             }
             "view.side_panel" => self.toggle_side_panel(),
-            "view.tools_pane" => self.set_left_open(!self.left_open()),
+            "view.tools_pane" => {
+                self.responsive.tools_auto_collapsed = false;
+                self.set_left_open(!self.left_open());
+            }
             "view.focus_page_input" => {
                 if let Some(view) = active.and_then(|i| self.views.get_mut(i)) {
                     // The page box in the toolbar (chrome.rs); select its label so typing replaces it.

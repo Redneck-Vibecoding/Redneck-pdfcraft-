@@ -48,8 +48,9 @@ impl PdfCraftApp {
         options.wheel_line = self.scroll_speed.wheel_line();
         options.key_line = self.scroll_speed.key_line();
         options.invert_middle = self.invert_middle_drag;
-        // PdfCraft's Hand stops at release; it does not coast after a drag.
-        options.flick_panning = false;
+        let eased = !self.animation_effects.reduced(None);
+        // Coasting swipe momentum is enabled on touch screens (desktop Hand keeps stopping at release).
+        options.flick_panning = self.responsive.touch_input() && eased;
         // Linux latches a middle-click auto-scroll; the other platforms drag the view.
         if cfg!(target_os = "linux") {
             options.middle_button = craft::behavior::MiddleButton::AutoScroll;
@@ -57,7 +58,6 @@ impl PdfCraftApp {
         // Production's autoscroll: the speed grows with the pointer's whole distance from the mark, a release inside a
         // short hold keeps it running, and it ends when the page view loses the keys.
         options.middle_autoscroll = craft::ui::canvas::MiddleAutoscrollFeel::Reader;
-        let eased = !self.animation_effects.reduced(None);
         options.animated_zoom = eased;
         options.eased_wheel = eased;
         // A ⌘/Ctrl-wheel notch zooms over about a quarter of a second, as production's egui wheel did, whatever the

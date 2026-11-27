@@ -1,11 +1,24 @@
 name: Publicar PWA en GitHub Pages
 
-# Descarga la build web publicada de pdfcraft, le anade manifest, iconos y service worker
-# (instalable y offline) y la publica en GitHub Pages.
+# Compila pdfcraft-web desde el codigo fuente de este repositorio, anade manifest, iconos y service worker
+# (instalable y offline) y lo publica en GitHub Pages.
 on:
   push:
     branches: [main]
-    paths: [".github/workflows/pages.yml"]
+    paths:
+      - ".github/workflows/pages.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rustfmt.toml"
+      - "clippy.toml"
+      - "craft-i18n.rev"
+      - "ATTRIBUTION.toml"
+      - "apps/pdfcraft-web/**"
+      - "apps/pdfcraft-ocr-worker/**"
+      - "crates/**"
+      - "packaging/env.sh"
+      - "packaging/web/**"
+      - "xtask/**"
   workflow_dispatch:
 
 permissions:
@@ -17,23 +30,69 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
-env:
-  PDFCRAFT_VERSION: "0.22.0"
-
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - name: Descargar y verificar la build web
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            zip pkg-config libxkbcommon-dev libwayland-dev libx11-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+
+      - name: Determinar toolchain de Rust
+        id: channel
+        uses: storytold/craft-common-actions/actions/rust-channel@main
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.channel.outputs.toolchain }}
+          targets: ${{ steps.channel.outputs.targets }}
+          components: ${{ steps.channel.outputs.components }}
+
+      - name: Cachear dependencias de Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Instalar Trunk
+        uses: storytold/craft-common-actions/actions/install-trunk@main
+
+      - name: Preparar traducciones (craft-i18n)
+        uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
+        with:
+          path: .build-deps/craft-i18n
+
+      - name: Preparar fuentes (craft-fonts)
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+          path: .build-deps/craft-fonts
+          persist-credentials: false
+
+      - name: Configurar CRAFT_FONTS_DIR
+        run: echo "CRAFT_FONTS_DIR=${GITHUB_WORKSPACE}/.build-deps/craft-fonts" >> "$GITHUB_ENV"
+
+      - name: Verificar lints y tests unitarios de UI
+        run: |
+          cargo clippy -p pdfcraft-ui-egui -p pdfcraft-web --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy -p pdfcraft-ui-egui --lib -- -D warnings
+          cargo test -p pdfcraft-ui-egui --lib
+
+      - name: Compilar y empaquetar pdfcraft-web desde el codigo fuente
         run: |
           set -euo pipefail
-          base="https://github.com/storytold/pdfcraft/releases/download/v${PDFCRAFT_VERSION}"
-          curl -fsSL -o web.zip "$base/pdfcraft-web-${PDFCRAFT_VERSION}.zip"
-          curl -fsSL -o SHA256SUMS.txt "$base/SHA256SUMS.txt"
-          expected=$(grep " pdfcraft-web-${PDFCRAFT_VERSION}.zip$" SHA256SUMS.txt | awk '{print $1}')
-          echo "$expected  web.zip" | sha256sum -c -
-          unzip -q web.zip
-          mv "pdfcraft-web-${PDFCRAFT_VERSION}" site
+          bash packaging/web/package.sh
+          . packaging/env.sh
+          unzip -q "$DIST/pdfcraft-web-${VERSION}.zip"
+          mv "pdfcraft-web-${VERSION}" site
 
       - name: Anadir la capa PWA
         run: |
@@ -200,13 +259,14 @@ jobs:
               <meta name="theme-color" content="#1f4fd8" />
               <meta name="mobile-web-app-capable" content="yes" />
               <meta name="apple-mobile-web-app-capable" content="yes" />
+              <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
               <meta name="apple-mobile-web-app-title" content="PdfCraft" />
               <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
               <link rel="icon" type="image/png" href="./icons/icon-192.png" />
               <style>
-                html,body{height:100%;height:100dvh;overscroll-behavior:none;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-                canvas{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
-                #pwa-progress{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:2147483647;max-width:92vw;
+                html,body{height:100%;height:100dvh;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+                canvas{touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+                #pwa-progress{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom, 0px));transform:translateX(-50%);z-index:2147483647;max-width:92vw;
                   background:#1f2430;color:#fff;font:14px/1.35 system-ui,sans-serif;padding:10px 14px;border-radius:10px;
                   box-shadow:0 4px 18px rgba(0,0,0,.3);display:none}
                 #pwa-progress .bar{height:4px;background:#ffffff33;border-radius:2px;margin-top:6px;overflow:hidden}

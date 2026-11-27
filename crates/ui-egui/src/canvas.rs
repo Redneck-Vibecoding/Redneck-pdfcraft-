@@ -404,6 +404,10 @@ pub struct PageSession {
     /// point, a flick's glide) from pass to pass, so the page tool lends them rather than building them.
     pub(crate) hand: craft::ui::canvas::HandTool,
     pub(crate) marquee_zoom: craft::ui::canvas::ZoomTool,
+    /// Touch gesture state for 1-finger panning under Select and double-tap zoom without drag.
+    pub(crate) touch_pan_press: Option<craft::ui::canvas::ToolPointer>,
+    pub(crate) touch_panning: bool,
+    pub(crate) touch_double_dragged: bool,
     /// What an area-mark press (Redact or Highlight off text) is doing, from the press to its release.
     pub(crate) mark_gesture: crate::tools::redact_ui::tool::AreaMarkGesture,
     /// The Stamp tool's press, from the press to its release.
@@ -469,6 +473,9 @@ impl PageSession {
             box_drag: PageBoxDrag::default(),
             hand: craft::ui::canvas::HandTool::new(Default::default()),
             marquee_zoom: craft::ui::canvas::ZoomTool::new(Default::default()),
+            touch_pan_press: None,
+            touch_panning: false,
+            touch_double_dragged: false,
             mark_gesture: Default::default(),
             stamp_press: None,
             menu_for: None,
@@ -949,6 +956,8 @@ struct BodyOut {
     over_part: bool,
     /// The page a primary press started on in this pass, so clicking a page in continuous view makes it current.
     pressed_page: Option<usize>,
+    /// Touch double-tap without drag, at the tapped screen position, to toggle page zoom.
+    double_tap: Option<Pos2>,
 }
 
 /// The part list of a pass, in paint order: pictures, paragraphs and added items, links and text links (only under
@@ -1359,6 +1368,7 @@ fn page_before(ui: &mut egui::Ui, body: &PageBody<'_>, callbacks: &mut PageCallb
         out.context = reply.context;
         out.back_to_select = finish.back_to_select;
         out.snapshot = finish.snapshot;
+        out.double_tap = finish.double_tap;
         // Set Page Boxes opens on the current page: the page double-clicked becomes it first.
         if let Some(page) = finish.open_boxes {
             session.pending_page = Some((page, None));
@@ -1770,6 +1780,7 @@ pub fn document_area_at(app: &mut PdfCraftApp, index: usize, rect: Rect, ui: &mu
         presenting,
         units: app.units,
         navigation,
+        touch_input: app.responsive.touch_input(),
         host: &app.host,
         wake: &app.wake,
         author: &app.comment_prefs.author,
@@ -1853,6 +1864,11 @@ pub fn document_area_at(app: &mut PdfCraftApp, index: usize, rect: Rect, ui: &mu
     // not theirs.
     if out.scrolled {
         view.end_find_following();
+    }
+    if let Some(at) = body_out.double_tap.take()
+        && zoom::apply_double_tap_zoom(view, rect, at)
+    {
+        ui.ctx().request_repaint();
     }
     // Full screen shows the page alone, so its keys are the page's: with nothing else holding the keyboard, the page
     // view takes it, and the presenter's keys reach the running tool.

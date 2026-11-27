@@ -30,6 +30,7 @@ const CATALOG_ONLY: &[(&str, &str, &str)] = &[
     ("view.rail.left", "Dock navigation rail on Left", "panel-left"),
     ("view.rail.right", "Dock navigation rail on Right", "panel-right"),
     ("view.fit_toggle", "Toggle fit", "scan"),
+    ("view.quick_toolbar", "Toolbar", "wrench"),
     ("bookmark.paste", "Paste bookmarks", "clipboard-paste"),
     ("bookmark.expand_all", "Expand all bookmarks", "chevrons-down"),
     ("bookmark.collapse_all", "Collapse all bookmarks", "chevrons-up"),
@@ -53,7 +54,7 @@ fn kind_of(id: &str) -> CommandKind {
         "view.theme.system" | "view.theme.light" | "view.theme.dark" => CommandKind::Radio { group: Some("theme".into()) },
         PANEL => CommandKind::Radio { group: Some("panel".into()) },
         "view.continuous" | "view.page_gaps" | "view.layout.cover" | "view.full_screen" | "view.read_mode" | "view.side_panel"
-        | "view.tools_pane" | "view.split" => CommandKind::Toggle,
+        | "view.tools_pane" | "view.quick_toolbar" | "view.split" => CommandKind::Toggle,
         _ => CommandKind::Command,
     }
 }
@@ -137,6 +138,7 @@ pub(crate) fn command_input(app: &mut PdfCraftApp, ctx: &egui::Context) -> Comma
     commands.extend((0..app.recent.len()).map(|index| CommandRef::with_params("file.open_recent", serde_json::json!({ "index": index }))));
     commands.extend((0..app.views.len()).map(|index| CommandRef::with_params(DOCUMENT, serde_json::json!({ "index": index }))));
     commands.extend(PANELS.iter().map(|(_, name, _)| CommandRef::with_params(PANEL, serde_json::json!({ "panel": name }))));
+    commands.push(CommandRef::new("view.quick_toolbar"));
     let mut states = CommandStates::new();
     for command in commands {
         let state = state_of(app, ctx, &command, gated);
@@ -221,6 +223,7 @@ fn enabled(app: &PdfCraftApp, ctx: &egui::Context, command: &CommandRef) -> bool
         PASTE => has_doc,
         SELECT_ALL | DELETE => has_doc || app.combine_showing() && !app.combine_draft.is_empty(),
         id if id.starts_with("view.zoom.") || id.starts_with("view.rotate.") => has_doc,
+        "view.quick_toolbar" => has_doc && !app.hotbar_hidden() && !organize && !(app.mode == Mode::AllTools && app.all_tools_full),
         PANEL => menus::panel(command).is_some(),
         id => enabled_id(id),
     }
@@ -239,6 +242,7 @@ fn checked(app: &PdfCraftApp, command: &CommandRef) -> Option<bool> {
         "view.read_mode" => app.mode == Mode::Read,
         "view.side_panel" => app.right().is_some(),
         "view.tools_pane" => app.left_open(),
+        "view.quick_toolbar" => app.dock.layout().contains(&crate::side_panels::PanelId::Toolbar),
         "view.split" => app.panes.split.is_some(),
         "view.theme.system" => app.theme_preference == ModeChoice::System,
         "view.theme.light" => app.theme_preference == ModeChoice::Light,

@@ -60,29 +60,45 @@ pub(crate) fn show(app: &mut PdfCraftApp, ui: &mut Ui) {
         view.page_input = view.current_page_label(labels.get(view.current()).map(String::as_str));
     }
 
+    let window_height = ui.ctx().content_rect().height();
+    let short_rail = window_height.is_finite() && window_height < 510.0;
+    let tiny_rail = window_height.is_finite() && window_height < 400.0;
+
     let label = labels.get(current).map_or("", String::as_str);
     // Out of range (an empty document) reads "Page 0 of 0", never past the end.
     let shown = if current < page_count { current + 1 } else { page_count };
     let of = crate::i18n::fmt(crate::i18n::t("Page {p} of {n}"), &[("p", &shown.to_string()), ("n", &page_count.to_string())]);
-    Text::new(super::page_position(current, page_count, label)).role(TypeRole::Caption).tooltip(of).show(ui);
+    if !tiny_rail {
+        Text::new(super::page_position(current, page_count, label)).role(TypeRole::Caption).tooltip(of).show(ui);
+    }
 
-    IconButton::command(IconId::new("chevron_left"), "view.previous_view").show(ui);
-    IconButton::command(IconId::new("chevron_right"), "view.next_view").show(ui);
+    if !short_rail {
+        IconButton::command(IconId::new("chevron_left"), "view.previous_view").show(ui);
+        IconButton::command(IconId::new("chevron_right"), "view.next_view").show(ui);
+    }
     IconButton::command(IconId::new("chevron_up"), "view.previous_page").show(ui);
     IconButton::command(IconId::new("chevron_down"), "view.next_page").show(ui);
 
-    // The percent suffix and three digits need the rail's full width, not an icon button's width.
-    let zoom_size = egui::vec2(ui.available_width(), field_size.y);
-    let (zoom_rect, _) = ui.allocate_exact_size(zoom_size, egui::Sense::hover());
-    let field = ZoomField::new("Zoom", view.canvas_view(), page_size).scale(ZoomScale::Points).show_at(ui, zoom_rect);
-    if let Some(edited) = field.view.committed() {
-        view.apply_canvas_view(edited);
+    if !tiny_rail {
+        // The percent suffix and three digits need the rail's full width, not an icon button's width.
+        let zoom_size = egui::vec2(ui.available_width(), field_size.y);
+        let (zoom_rect, _) = ui.allocate_exact_size(zoom_size, egui::Sense::hover());
+        let field = ZoomField::new("Zoom", view.canvas_view(), page_size).scale(ZoomScale::Points).show_at(ui, zoom_rect);
+        if let Some(edited) = field.view.committed() {
+            view.apply_canvas_view(edited);
+        }
     }
 
-    IconButton::command(IconId::new("zoom_in"), "view.zoom.in").show(ui);
-    IconButton::command(IconId::new("zoom_out"), "view.zoom.out").show(ui);
-    IconButton::command(IconId::new("maximize_2"), "view.fit_toggle").show(ui);
-    IconButton::command(IconId::new("rotate_cw"), "view.rotate.cw").show(ui);
+    if !short_rail {
+        IconButton::command(IconId::new("zoom_in"), "view.zoom.in").show(ui);
+        IconButton::command(IconId::new("zoom_out"), "view.zoom.out").show(ui);
+    }
+    if !tiny_rail {
+        IconButton::command(IconId::new("maximize_2"), "view.fit_toggle").show(ui);
+    }
+    if !short_rail {
+        IconButton::command(IconId::new("rotate_cw"), "view.rotate.cw").show(ui);
+    }
 
     // The rows' marks come from the commands' checked state (the catalog), not from here.
     let display_icon = if view.view.display == PageDisplay::Single { "file-text" } else { "columns-2" };
